@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no"/>
+<title>GymLog</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+  select{-webkit-appearance:none;appearance:none;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const {useState, useEffect, useRef, useCallback} = React;
+
+
+// ─────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────
+const CLIENT_ID = "316382497101-tniud3gk4gidjisavi56gs56b8cevi0v.apps.googleusercontent.com";
+const SCOPES = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file";
+const SPREADSHEET_TITLE = "GymLog Tracker";
+const SHEET_ID_KEY = "gl_sheet_id_v2";
+
+// ─────────────────────────────────────────────
+// WORKOUT DATA
+// ─────────────────────────────────────────────
+const WORKOUTS = {
+  push1:{ id:"push1", label:"Push 1", subtitle:"Chest Focus", icon:"💪", exercises:[
+    {id:"flat_bench",      name:"Flat Bench Press",                    sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"smith_shoulder",  name:"Seated Smith Machine Shoulder Press", sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"db_flys",         name:"Flat Bench Dumbbell Flys",            sets:3, repRange:"10-12", trackWeight:true},
+    {id:"weighted_dips",   name:"Weighted Dips",                       sets:4, repRange:"12-15", trackWeight:false, bodyweight:true},
+    {id:"lateral_raises",  name:"Dumbbell Lateral Raises",             sets:4, repRange:"12-15", trackWeight:true},
+    {id:"tricep_rope",     name:"Triceps Rope Extension",              sets:4, repRange:"6-10",  trackWeight:true},
+  ]},
+  push2:{ id:"push2", label:"Push 2", subtitle:"Shoulder Focus", icon:"💪", exercises:[
+    {id:"incline_bench",   name:"Incline Bench Press",                 sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"incline_db_flys", name:"Incline Dumbbell Flys",               sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"cable_lateral",   name:"Single Arm Cable Lateral Raise",      sets:3, repRange:"10-12", trackWeight:true},
+    {id:"arnold_press",    name:"Seated Arnold Press",                 sets:4, repRange:"10-12", trackWeight:true},
+    {id:"db_skull",        name:"Dumbbell Skullcrusher",               sets:3, repRange:"8-12",  trackWeight:true},
+    {id:"rope_overhead",   name:"Rope Overhead Extension",             sets:3, repRange:"8-12",  trackWeight:true},
+  ]},
+  pull1:{ id:"pull1", label:"Pull 1", subtitle:"Width Focus", icon:"🔙", exercises:[
+    {id:"wide_pulldown",   name:"Wide Grip Lat Pulldown",              sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"reverse_rows",    name:"Reverse Grip Barbell Rows",           sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"db_pullover",     name:"Dumbbell Pullover",                   sets:3, repRange:"10-12", trackWeight:true},
+    {id:"close_pulldown",  name:"Close Grip Pulldown",                 sets:3, repRange:"12-15", trackWeight:true},
+    {id:"cable_rows",      name:"Close Grip Cable Rows",               sets:3, repRange:"12-15", trackWeight:true},
+    {id:"db_curls",        name:"Standing Dumbbell Curls",             sets:4, repRange:"6-10",  trackWeight:true},
+    {id:"preacher_curls",  name:"Machine Preacher Curls",              sets:3, repRange:"6-10",  trackWeight:true},
+  ]},
+  pull2:{ id:"pull2", label:"Pull 2", subtitle:"Thickness Focus", icon:"🔙", exercises:[
+    {id:"deadlifts",       name:"Deadlifts",                           sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"tbar_rows",       name:"T-Bar Rows",                          sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"one_arm_rows",    name:"One Arm Dumbbell Rows",               sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"db_shrugs",       name:"Dumbbell Shrugs",                     sets:4, repRange:"12-15", trackWeight:true},
+    {id:"rear_delt_flys",  name:"Bent Over DB Flys (Rear Delts)",      sets:4, repRange:"12-15", trackWeight:true},
+    {id:"rope_hammer",     name:"Rope Hammer Curls",                   sets:4, repRange:"10-15", trackWeight:true},
+  ]},
+  leg1:{ id:"leg1", label:"Leg 1", subtitle:"Hamstring Focus", icon:"🦵", exercises:[
+    {id:"walking_lunges",  name:"Walking Lunges",                      sets:3, repRange:"20 steps", trackWeight:false, stepsOnly:true},
+    {id:"stiff_deadlift",  name:"Stiff Leg Deadlift",                  sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"leg_press_ham",   name:"Leg Press (Feet Up & Wide)",          sets:3, repRange:"6-10",  trackWeight:true},
+    {id:"lying_curls",     name:"Lying Leg Curls",                     sets:4, repRange:"10-12", trackWeight:true},
+    {id:"seated_calf",     name:"Seated Calf Raises",                  sets:5, repRange:"6-10",  trackWeight:true},
+  ]},
+  leg2:{ id:"leg2", label:"Leg 2", subtitle:"Quads Focus", icon:"🦵", exercises:[
+    {id:"leg_ext",         name:"Leg Extension",                       sets:4, repRange:"10-15", trackWeight:true},
+    {id:"hack_squat",      name:"Hack Squat",                          sets:4, repRange:"6-10",  trackWeight:true},
+    {id:"leg_press_quad",  name:"Leg Press (Feet Low & Narrow)",       sets:4, repRange:"10-12", trackWeight:true},
+    {id:"standing_calf",   name:"Standing Calf Raises",                sets:4, repRange:"8-12",  trackWeight:true},
+  ]},
+  swimming:{ id:"swimming", label:"Swimming", subtitle:"Cardio", icon:"🏊", isSwimming:true, exercises:[
+    {id:"freestyle",    name:"Freestyle",    isSwimming:true},
+    {id:"butterfly",    name:"Butterfly",    isSwimming:true},
+    {id:"breaststroke", name:"Breaststroke", isSwimming:true},
+    {id:"backstroke",   name:"Backstroke",   isSwimming:true},
+  ]},
+};
+
+const ALL_EX = {};
+Object.values(WORKOUTS).forEach(w => w.exercises.forEach(e => { ALL_EX[e.id] = e; }));
+
+const INITIAL_PRS = {
+  flat_bench:{weight:55,reps:8,date:"Jan 19, 2026"},     smith_shoulder:{weight:30,reps:8,date:"Jan 19, 2026"},
+  db_flys:{weight:12,reps:12,date:"Jan 19, 2026"},       weighted_dips:{weight:null,reps:15,date:"Jan 19, 2026"},
+  tricep_rope:{weight:17.5,reps:8,date:"Jan 19, 2026"},  wide_pulldown:{weight:50,reps:8,date:"Jan 14, 2026"},
+  reverse_rows:{weight:20,reps:12,date:"Jan 14, 2026"},  db_pullover:{weight:18,reps:10,date:"Jan 14, 2026"},
+  cable_rows:{weight:35,reps:12,date:"Jan 14, 2026"},    leg_press_ham:{weight:100,reps:12,date:"Jan 15, 2026"},
+  leg_press_quad:{weight:100,reps:12,date:"Jan 15, 2026"}, stiff_deadlift:{weight:40,reps:10,date:"Jan 15, 2026"},
+  lying_curls:{weight:30,reps:10,date:"Jan 15, 2026"},
+};
+
+const SCHEDULE = {1:"push",2:"pull",3:"leg",4:"push",5:"pull",6:"leg",0:"rest"};
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAYS = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+
+function dkey(y,m,d){ return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
+function fmtDate(y,m,d){ return new Date(y,m,d).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"}); }
+function vol(w,r){ return (w||0)*(r||0); }
+function repOpts(si,ex){
+  if(ex.bodyweight) return [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
+  if(si===0) return [12,15];
+  if(si===1) return [8,10,12,15];
+  return [6,7,8,9,10,11,12,13,14,15];
+}
+function prSug(pr){
+  if(!pr||!pr.weight) return null;
+  if(pr.reps>=10) return `+2.5kg suggested (hit ${pr.reps} reps last time)`;
+  if(pr.reps>=8)  return `Maintain ${pr.weight}kg (${pr.reps} reps)`;
+  return `Maintain ${pr.weight}kg`;
+}
+
+// ─────────────────────────────────────────────
+// GOOGLE SHEETS API HELPERS
+// ─────────────────────────────────────────────
+async function sheetsRequest(token, path, method="GET", body=null){
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets${path}`, {
+    method,
+    headers:{ Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if(!res.ok){ const e=await res.text(); throw new Error(e); }
+  return res.json();
+}
+
+async function driveRequest(token, path, method="GET", body=null){
+  const res = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
+    method,
+    headers:{ Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if(!res.ok){ const e=await res.text(); throw new Error(e); }
+  return res.json();
+}
+
+async function findOrCreateSpreadsheet(token){
+  const cached = localStorage.getItem(SHEET_ID_KEY);
+  if(cached){
+    // Verify it still exists
+    try{
+      await sheetsRequest(token, `/${cached}?fields=spreadsheetId`);
+      return cached;
+    } catch { localStorage.removeItem(SHEET_ID_KEY); }
+  }
+
+  // Search Drive for existing sheet
+  const search = await driveRequest(token, `/files?q=name='${SPREADSHEET_TITLE}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false&fields=files(id,name)`);
+  if(search.files?.length > 0){
+    const id = search.files[0].id;
+    localStorage.setItem(SHEET_ID_KEY, id);
+    return id;
+  }
+
+  // Create new spreadsheet with all tabs
+  const created = await sheetsRequest(token, "", "POST", {
+    properties:{ title: SPREADSHEET_TITLE },
+    sheets:[
+      { properties:{ title:"Workouts" } },
+      { properties:{ title:"PRs" } },
+      { properties:{ title:"Settings" } },
+    ]
+  });
+  const id = created.spreadsheetId;
+
+  // Add headers
+  await sheetsRequest(token, `/${id}/values:batchUpdate`, "POST", {
+    valueInputOption:"RAW",
+    data:[
+      { range:"Workouts!A1", values:[["id","date","dateLabel","workoutId","workoutLabel","exerciseId","exerciseName","set1_weight","set1_reps","set2_weight","set2_reps","set3_weight","set3_reps","set4_weight","set4_reps","set5_weight","set5_reps","swimLaps","savedAt"]] },
+      { range:"PRs!A1",      values:[["exerciseId","exerciseName","weight","reps","date","updatedAt"]] },
+      { range:"Settings!A1", values:[["key","value"]] },
+    ]
+  });
+
+  localStorage.setItem(SHEET_ID_KEY, id);
+  return id;
+}
+
+async function loadAllData(token, sheetId){
+  const res = await sheetsRequest(token, `/${sheetId}/values:batchGet?ranges=Workouts!A1:S10000&ranges=PRs!A1:F500&ranges=Settings!A1:B50`);
+  const [wSheet, prSheet, settSheet] = res.valueRanges || [];
+
+  // Parse workouts
+  const wRows = wSheet?.values || [];
+  const wHeaders = wRows[0] || [];
+  const logs = {};
+  wRows.slice(1).forEach(row => {
+    const r = {};
+    wHeaders.forEach((h,i) => { r[h] = row[i]||""; });
+    if(!r.id||!r.date) return;
+    const sets = [];
+    for(let i=1;i<=5;i++){
+      if(r[`set${i}_reps`]) sets.push({ weight:r[`set${i}_weight`]||"", reps:parseInt(r[`set${i}_reps`])||0 });
+    }
+    let swimLaps = null;
+    if(r.swimLaps){ try{ swimLaps=JSON.parse(r.swimLaps); }catch{} }
+    if(!logs[r.date]) logs[r.date]=[];
+    logs[r.date].push({ id:r.id, workoutId:r.workoutId, exerciseId:r.exerciseId, sets:sets.length?sets:undefined, swimLaps:swimLaps||undefined, savedAt:r.savedAt, _row:wRows.indexOf(row)+1 });
+  });
+
+  // Parse PRs
+  const prRows = prSheet?.values || [];
+  const prHeaders = prRows[0] || [];
+  const prs = { ...INITIAL_PRS };
+  prRows.slice(1).forEach(row => {
+    const r = {};
+    prHeaders.forEach((h,i) => { r[h]=row[i]||""; });
+    if(!r.exerciseId) return;
+    prs[r.exerciseId] = { weight:r.weight?parseFloat(r.weight):null, reps:parseInt(r.reps)||0, date:r.date||"" };
+  });
+
+  // Parse settings
+  const stRows = settSheet?.values || [];
+  const settings = {};
+  stRows.slice(1).forEach(row => { if(row[0]) settings[row[0]]=row[1]||""; });
+
+  return { logs, prs, settings };
+}
+
+async function appendRow(token, sheetId, entry, dateLabel){
+  const ex = ALL_EX[entry.exerciseId], w = WORKOUTS[entry.workoutId];
+  const sets = entry.sets||[];
+  const setCells = [];
+  for(let i=0;i<5;i++) setCells.push(sets[i]?.weight||"", sets[i]?.reps||"");
+  const row = [entry.id, entry.id.split("_").slice(0,3).join("-"), dateLabel, entry.workoutId, w?.label||"", entry.exerciseId, ex?.name||"", ...setCells, entry.swimLaps?JSON.stringify(entry.swimLaps):"", new Date().toISOString()];
+  await sheetsRequest(token, `/${sheetId}/values/Workouts!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, "POST", { values:[row] });
+}
+
+async function updateRow(token, sheetId, entry, dateLabel, rowNum){
+  const ex = ALL_EX[entry.exerciseId], w = WORKOUTS[entry.workoutId];
+  const sets = entry.sets||[];
+  const setCells = [];
+  for(let i=0;i<5;i++) setCells.push(sets[i]?.weight||"", sets[i]?.reps||"");
+  const row = [entry.id, entry.id.split("_").slice(0,3).join("-"), dateLabel, entry.workoutId, w?.label||"", entry.exerciseId, ex?.name||"", ...setCells, entry.swimLaps?JSON.stringify(entry.swimLaps):"", new Date().toISOString()];
+  await sheetsRequest(token, `/${sheetId}/values/Workouts!A${rowNum}:S${rowNum}?valueInputOption=RAW`, "PUT", { values:[row] });
+}
+
+async function deleteRow(token, sheetId, sheetGid, rowNum){
+  await sheetsRequest(token, `/${sheetId}:batchUpdate`, "POST", {
+    requests:[{ deleteDimension:{ range:{ sheetId:sheetGid, dimension:"ROWS", startIndex:rowNum-1, endIndex:rowNum } } }]
+  });
+}
+
+async function upsertPR(token, sheetId, exerciseId, pr, allPrRows){
+  const ex = ALL_EX[exerciseId];
+  const row = [exerciseId, ex?.name||"", pr.weight||"", pr.reps, pr.date, new Date().toISOString()];
+  // Find existing row
+  const idx = allPrRows.findIndex(r=>r[0]===exerciseId);
+  if(idx>=0){
+    await sheetsRequest(token, `/${sheetId}/values/PRs!A${idx+2}:F${idx+2}?valueInputOption=RAW`, "PUT", { values:[row] });
+  } else {
+    await sheetsRequest(token, `/${sheetId}/values/PRs!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, "POST", { values:[row] });
+  }
+}
+
+async function saveSetting(token, sheetId, key, value, allSettRows){
+  const idx = allSettRows.findIndex(r=>r[0]===key);
+  if(idx>=0){
+    await sheetsRequest(token, `/${sheetId}/values/Settings!A${idx+2}:B${idx+2}?valueInputOption=RAW`, "PUT", { values:[[key,value]] });
+  } else {
+    await sheetsRequest(token, `/${sheetId}/values/Settings!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, "POST", { values:[[key,value]] });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GOOGLE AUTH via GSI (no redirect URI needed)
+// ─────────────────────────────────────────────
+function loadGSI(){
+  return new Promise((resolve) => {
+    if(window.google?.accounts?.oauth2){ resolve(); return; }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.onload = resolve;
+    document.head.appendChild(script);
+  });
+}
+
+function signInWithGoogle(){
+  return new Promise(async (resolve, reject) => {
+    await loadGSI();
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      callback: (response) => {
+        if(response.error){ reject(new Error(response.error)); return; }
+        resolve({
+          token: response.access_token,
+          expiresAt: Date.now() + (response.expires_in||3600)*1000,
+        });
+      },
+    });
+    client.requestAccessToken({ prompt: "select_account" });
+  });
+}
+
+// ─────────────────────────────────────────────
+// MAIN APP
+// ─────────────────────────────────────────────
+export default function App(){
+  const today = new Date();
+  const [month,   setMonth]   = useState(today.getMonth());
+  const [year,    setYear]    = useState(today.getFullYear());
+  const [logs,    setLogs]    = useState({});
+  const [prs,     setPrs]     = useState({...INITIAL_PRS});
+  const [week,    setWeek]    = useState(2);
+  const [lastLeg, setLastLeg] = useState("leg2");
+  const [tab,     setTab]     = useState("cal");
+  const [modal,   setModal]   = useState(null);
+  const [form,    setForm]    = useState({});
+  const [flash,   setFlash]   = useState(null);
+
+  // Auth & sync state
+  const [authState, setAuthState] = useState("idle"); // idle | signing-in | ready | error
+  const [authErr,   setAuthErr]   = useState("");
+  const [syncMsg,   setSyncMsg]   = useState("");
+  const [syncing,   setSyncing]   = useState(false);
+
+  const tokenRef   = useRef(null);
+  const sheetIdRef = useRef(null);
+  const prRowsRef  = useRef([]);  // raw PR rows for upsert
+  const settRowsRef= useRef([]);  // raw settings rows
+  const workoutRowsRef = useRef({}); // entryId -> rowNum
+
+  // Load from localStorage as immediate fallback
+  useEffect(() => {
+    try {
+      const ll = JSON.parse(localStorage.getItem("gl_logs")||"{}");
+      const lp = {...INITIAL_PRS,...JSON.parse(localStorage.getItem("gl_prs")||"{}")};
+      setLogs(ll); setPrs(lp);
+      setWeek(parseInt(localStorage.getItem("gl_week")||"2"));
+      setLastLeg(localStorage.getItem("gl_lastleg")||"leg2");
+    } catch {}
+  }, []);
+
+  async function handleSignIn(){
+    setAuthState("signing-in");
+    setAuthErr("");
+    try {
+      const {token, expiresAt} = await signInWithGoogle();
+      tokenRef.current = {token, expiresAt};
+      setSyncMsg("Loading your data from Google Sheets…");
+      setSyncing(true);
+      const sid = await findOrCreateSpreadsheet(token);
+      sheetIdRef.current = sid;
+
+      // Get sheet GID for Workouts tab (for row deletion)
+      const meta = await sheetsRequest(token, `/${sid}?fields=sheets.properties`);
+      const workoutsSheet = meta.sheets?.find(s=>s.properties.title==="Workouts");
+      sheetIdRef.workoutsGid = workoutsSheet?.properties?.sheetId || 0;
+
+      const {logs:l, prs:p, settings:s} = await loadAllData(token, sid);
+
+      // Build row map
+      const rowMap = {};
+      Object.values(l).flat().forEach(e=>{ if(e._row) rowMap[e.id]=e._row; });
+      workoutRowsRef.current = rowMap;
+
+      // Strip _row from entries
+      const cleanLogs = {};
+      Object.entries(l).forEach(([d,entries])=>{
+        cleanLogs[d] = entries.map(({_row,...rest})=>rest);
+      });
+
+      setLogs(cleanLogs);
+      setPrs(p);
+      if(s.trainingWeek) setWeek(parseInt(s.trainingWeek)||2);
+      if(s.lastLeg) setLastLeg(s.lastLeg);
+
+      // Cache raw rows for upserts
+      const raw = await sheetsRequest(token, `/${sid}/values:batchGet?ranges=PRs!A1:F500&ranges=Settings!A1:B50`);
+      prRowsRef.current  = (raw.valueRanges?.[0]?.values||[]).slice(1);
+      settRowsRef.current= (raw.valueRanges?.[1]?.values||[]).slice(1);
+
+      // Mirror to localStorage
+      localStorage.setItem("gl_logs", JSON.stringify(cleanLogs));
+      localStorage.setItem("gl_prs",  JSON.stringify(p));
+
+      setAuthState("ready");
+      setSyncMsg("✓ Synced with Google Sheets");
+      setSyncing(false);
+      setTimeout(()=>setSyncMsg(""),3000);
+    } catch(err){
+      console.error(err);
+      setAuthState("error");
+      setAuthErr(err.message||"Sign in failed");
+      setSyncing(false);
+      setSyncMsg("");
+    }
+  }
+
+  function getToken(){
+    const t = tokenRef.current;
+    if(!t) return null;
+    if(Date.now() > t.expiresAt - 60000) return null; // expired
+    return t.token;
+  }
+
+  const suggestedLeg = lastLeg==="leg1" ? "leg2" : "leg1";
+
+  // ── Modal helpers ──
+  function openDay(d,y=year,m=month){
+    setModal({step:"day", dk:dkey(y,m,d), label:fmtDate(y,m,d)});
+  }
+  function goPickWorkout(){ setModal(p=>({...p,step:"pick"})); }
+  function goPickExercise(wid){ setModal(p=>({...p,step:"pickEx",workoutId:wid})); }
+
+  function goLogExercise(workoutId, exerciseId){
+    const ex = WORKOUTS[workoutId]?.exercises.find(e=>e.id===exerciseId);
+    const pr = prs[exerciseId];
+    let prefillW="";
+    if(ex?.trackWeight&&pr?.weight) prefillW=String(pr.reps>=10?pr.weight+2.5:pr.weight);
+    const initSets = ex ? Array.from({length:ex.sets},(_,i)=>({ weight:ex.trackWeight?prefillW:"", reps:repOpts(i,ex)[0] })) : [];
+    setForm(ex?.isSwimming?{laps:{}}:{sets:initSets});
+    setModal(p=>({...p,step:"log",workoutId,exerciseId}));
+  }
+
+  function goEditEntry(entryId){
+    const entry=(logs[modal.dk]||[]).find(e=>e.id===entryId);
+    if(!entry) return;
+    const ex=ALL_EX[entry.exerciseId];
+    setForm(ex?.isSwimming?{laps:entry.swimLaps||{}}:{sets:entry.sets?[...entry.sets]:[]});
+    setModal(p=>({...p,step:"edit",workoutId:entry.workoutId,exerciseId:entry.exerciseId,entryId}));
+  }
+
+  async function deleteEntry(entryId){
+    const rowNum = workoutRowsRef.current[entryId];
+    setLogs(prev=>{
+      const key=modal.dk;
+      const updated={...prev,[key]:(prev[key]||[]).filter(e=>e.id!==entryId)};
+      localStorage.setItem("gl_logs",JSON.stringify(updated));
+      return updated;
+    });
+    const token=getToken();
+    if(token&&sheetIdRef.current&&rowNum){
+      setSyncing(true); setSyncMsg("Deleting from Sheets…");
+      try{
+        await deleteRow(token, sheetIdRef.current, sheetIdRef.workoutsGid||0, rowNum);
+        // Shift all row numbers down by 1 for rows after deleted
+        const newMap={...workoutRowsRef.current};
+        delete newMap[entryId];
+        Object.keys(newMap).forEach(id=>{ if(newMap[id]>rowNum) newMap[id]--; });
+        workoutRowsRef.current=newMap;
+        setSyncMsg("✓ Deleted"); setTimeout(()=>setSyncMsg(""),2000);
+      } catch { setSyncMsg("⚠️ Sync failed"); }
+      setSyncing(false);
+    }
+  }
+
+  async function saveEntry(){
+    const {dk:key, label, workoutId, exerciseId, step, entryId} = modal;
+    const ex=ALL_EX[exerciseId];
+    const isEdit=step==="edit";
+    const id=isEdit?entryId:`${key}_${exerciseId}_${Date.now()}`;
+    const entry=ex?.isSwimming
+      ?{id,workoutId,exerciseId,swimLaps:form.laps,savedAt:Date.now()}
+      :{id,workoutId,exerciseId,sets:form.sets,savedAt:Date.now()};
+
+    // PR check
+    const newPrNames=[];
+    const updatedPrs={...prs};
+    if(!ex?.isSwimming&&form.sets){
+      form.sets.forEach(set=>{
+        const w=parseFloat(set.weight)||0,r=parseInt(set.reps)||0;
+        if(!r) return;
+        const existing=updatedPrs[exerciseId];
+        if(ex?.bodyweight){
+          if(!existing||r>(existing.reps||0)){ updatedPrs[exerciseId]={weight:null,reps:r,date:label}; newPrNames.push(ex.name); }
+        } else if(w>0){
+          const v=vol(w,r),ev=vol(existing?.weight,existing?.reps);
+          if(!existing||v>ev){ updatedPrs[exerciseId]={weight:w,reps:r,date:label}; if(!newPrNames.includes(ex.name)) newPrNames.push(ex.name); }
+        }
+      });
+    }
+    if(newPrNames.length) setPrs(updatedPrs);
+
+    setLogs(prev=>{
+      const existing=prev[key]||[];
+      const updated=isEdit?existing.map(e=>e.id===entryId?entry:e):[...existing,entry];
+      const newLogs={...prev,[key]:updated};
+      localStorage.setItem("gl_logs",JSON.stringify(newLogs));
+      return newLogs;
+    });
+
+    if(workoutId==="leg1"||workoutId==="leg2"){
+      setLastLeg(workoutId);
+      localStorage.setItem("gl_lastleg",workoutId);
+    }
+
+    // Sync to Sheets
+    const token=getToken();
+    if(token&&sheetIdRef.current){
+      setSyncing(true); setSyncMsg("Saving to Google Sheets…");
+      try{
+        if(isEdit){
+          const rowNum=workoutRowsRef.current[entryId];
+          if(rowNum) await updateRow(token,sheetIdRef.current,entry,label,rowNum);
+          else { await appendRow(token,sheetIdRef.current,entry,label); }
+        } else {
+          await appendRow(token,sheetIdRef.current,entry,label);
+          // Get new row number
+          const d=await sheetsRequest(token,`/${sheetIdRef.current}/values/Workouts!A:A`);
+          const rowNum=(d.values?.length||1);
+          workoutRowsRef.current={...workoutRowsRef.current,[id]:rowNum};
+        }
+        // Sync PRs
+        for(const name of newPrNames){
+          const eid=Object.keys(updatedPrs).find(k=>ALL_EX[k]?.name===name);
+          if(eid) await upsertPR(token,sheetIdRef.current,eid,updatedPrs[eid],prRowsRef.current);
+        }
+        // Sync settings
+        if(workoutId==="leg1"||workoutId==="leg2"){
+          await saveSetting(token,sheetIdRef.current,"lastLeg",workoutId,settRowsRef.current);
+        }
+        setSyncMsg("✓ Saved to Google Sheets");
+        setTimeout(()=>setSyncMsg(""),3000);
+      } catch(err){
+        console.error(err);
+        setSyncMsg("⚠️ Saved locally (Sheets sync failed)");
+      }
+      setSyncing(false);
+    }
+
+    if(newPrNames.length) setFlash(newPrNames);
+    setModal(p=>({...p,step:"day"}));
+  }
+
+  async function handleWeekChange(w){
+    setWeek(w);
+    localStorage.setItem("gl_week",String(w));
+    const token=getToken();
+    if(token&&sheetIdRef.current){
+      try{ await saveSetting(token,sheetIdRef.current,"trainingWeek",String(w),settRowsRef.current); } catch{}
+    }
+  }
+
+  // Calendar
+  const firstDay    = new Date(year,month,1).getDay();
+  const daysInMonth = new Date(year,month+1,0).getDate();
+
+  return (
+    <div style={{minHeight:"100vh",background:"#0f172a",color:"#f1f5f9",fontFamily:"'DM Sans','Segoe UI',system-ui,sans-serif",fontSize:14}}>
+
+      {/* HEADER */}
+      <div style={{background:"rgba(15,23,42,0.97)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:50,backdropFilter:"blur(12px)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:22}}>🏋️</span>
+          <div>
+            <div style={{fontWeight:700,fontSize:16,color:"#f8fafc"}}>GymLog</div>
+            <div style={{fontSize:11,color:"#64748b"}}>Week {week} · {week<=2?"Push1/Pull1":"Push2/Pull2"}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:5,alignItems:"center"}}>
+          {[["cal","📅","Cal"],["prs","🏆","PRs"],["stats","📊","Stats"]].map(([v,ic,lbl])=>(
+            <button key={v} onClick={()=>setTab(v)} style={{padding:"5px 10px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,background:tab===v?"#22c55e":"rgba(255,255,255,0.07)",color:tab===v?"#fff":"#94a3b8"}}>{ic} {lbl}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* SYNC / AUTH BAR */}
+      <div style={{background: authState==="ready"?"rgba(34,197,94,0.07)":"rgba(30,41,59,0.8)", borderBottom:"1px solid rgba(255,255,255,0.06)", padding:"8px 16px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,fontSize:12}}>
+          {syncing && <Spinner/>}
+          {authState==="ready" && !syncing && <span style={{color:"#22c55e"}}>●</span>}
+          {authState==="error" && <span>⚠️</span>}
+          <span style={{color: authState==="ready"?"#4ade80": authState==="error"?"#f87171":"#64748b"}}>
+            {syncMsg || (authState==="ready"?"Synced with Google Sheets": authState==="signing-in"?"Signing in…": authState==="error"?authErr:"Using local storage only")}
+          </span>
+          {authState==="ready" && sheetIdRef.current && (
+            <a href={`https://docs.google.com/spreadsheets/d/${sheetIdRef.current}`} target="_blank" rel="noreferrer" style={{color:"#3b82f6",fontSize:11,textDecoration:"none"}}>Open Sheet ↗</a>
+          )}
+        </div>
+        {authState!=="ready" && (
+          <button onClick={handleSignIn} disabled={authState==="signing-in"} style={{background:"#4285f4",border:"none",color:"#fff",borderRadius:8,padding:"7px 14px",cursor:"pointer",fontSize:12,fontWeight:700,display:"flex",alignItems:"center",gap:6,opacity:authState==="signing-in"?0.7:1}}>
+            <span>G</span> Sign in with Google
+          </button>
+        )}
+        {authState==="ready" && (
+          <button onClick={()=>{tokenRef.current=null;sheetIdRef.current=null;setAuthState("idle");}} style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#64748b",borderRadius:8,padding:"5px 10px",cursor:"pointer",fontSize:11}}>Sign out</button>
+        )}
+      </div>
+
+      {/* WEEK SELECTOR */}
+      <div style={{background:"rgba(30,41,59,0.5)",padding:"8px 16px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+        <span style={{fontSize:11,color:"#64748b",fontWeight:700}}>WEEK</span>
+        {[1,2,3,4].map(w=>(
+          <button key={w} onClick={()=>handleWeekChange(w)} style={{width:30,height:30,borderRadius:8,border:"none",cursor:"pointer",background:week===w?"#3b82f6":"rgba(255,255,255,0.07)",color:week===w?"#fff":"#94a3b8",fontWeight:700,fontSize:13}}>{w}</button>
+        ))}
+        <span style={{fontSize:11,color:"#475569"}}>Next leg: <span style={{color:"#fbbf24"}}>{suggestedLeg==="leg1"?"Leg 1 🦵":"Leg 2 🦵"}</span></span>
+      </div>
+
+      {/* CALENDAR */}
+      {tab==="cal" && (
+        <div style={{padding:16}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+            <button onClick={()=>{if(month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1);}} style={NB}>‹</button>
+            <span style={{fontWeight:700,fontSize:17}}>{MONTHS[month]} {year}</span>
+            <button onClick={()=>{if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1);}} style={NB}>›</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3,marginBottom:3}}>
+            {DAYS.map(d=><div key={d} style={{textAlign:"center",fontSize:11,color:"#475569",fontWeight:600,padding:"3px 0"}}>{d}</div>)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
+            {Array.from({length:firstDay}).map((_,i)=><div key={`g${i}`}/>)}
+            {Array.from({length:daysInMonth},(_,i)=>{
+              const d=i+1,key=dkey(year,month,d);
+              const dayLogs=logs[key]||[];
+              const hasLog=dayLogs.length>0;
+              const isToday=today.getDate()===d&&today.getMonth()===month&&today.getFullYear()===year;
+              const dow=new Date(year,month,d).getDay();
+              const sched=SCHEDULE[dow]!=="rest";
+              return (
+                <button key={d} onClick={()=>openDay(d)} style={{aspectRatio:"1",borderRadius:10,cursor:"pointer",border:isToday?"2px solid #22c55e":sched&&!hasLog?"1px solid rgba(59,130,246,0.35)":"1px solid transparent",background:hasLog?"rgba(34,197,94,0.13)":isToday?"rgba(34,197,94,0.06)":"rgba(255,255,255,0.03)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1,padding:3}}>
+                  <span style={{fontSize:13,fontWeight:isToday?700:500,color:isToday?"#22c55e":"#cbd5e1"}}>{d}</span>
+                  {hasLog&&<span style={{fontSize:12}}>✓</span>}
+                  {dayLogs.length>1&&<span style={{fontSize:9,background:"#22c55e",color:"#000",borderRadius:999,padding:"1px 3px",fontWeight:700}}>{dayLogs.length}</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{marginTop:10,display:"flex",gap:14}}>
+            <LI bg="rgba(34,197,94,0.3)" label="Logged"/>
+            <LI border="rgba(59,130,246,0.5)" label="Scheduled"/>
+            <LI border="#22c55e" label="Today"/>
+          </div>
+        </div>
+      )}
+
+      {/* PRs */}
+      {tab==="prs" && (
+        <div style={{padding:16}}>
+          <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>Personal Records 🏆</div>
+          {Object.values(WORKOUTS).filter(w=>!w.isSwimming).map(workout=>(
+            <div key={workout.id} style={{marginBottom:20}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#22c55e",marginBottom:8,letterSpacing:"0.5px",textTransform:"uppercase"}}>{workout.icon} {workout.label} — {workout.subtitle}</div>
+              {workout.exercises.filter(ex=>ex.trackWeight||ex.bodyweight).map(ex=>{
+                const pr=prs[ex.id];
+                return (
+                  <div key={ex.id} style={{background:"rgba(255,255,255,0.04)",borderRadius:10,padding:"10px 12px",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>
+                      <div style={{fontWeight:600,fontSize:13}}>{ex.name}</div>
+                      {pr&&<div style={{fontSize:11,color:"#475569"}}>{pr.date}</div>}
+                    </div>
+                    <div style={{fontWeight:700,color:"#fbbf24",fontSize:14}}>
+                      {pr?(ex.bodyweight?`${pr.reps} reps`:`${pr.weight}kg × ${pr.reps}`):<span style={{color:"#475569",fontSize:12}}>—</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* STATS */}
+      {tab==="stats" && (
+        <div style={{padding:16}}>
+          <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>Stats 📊</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:20}}>
+            <SC icon="🏋️" label="Total Sets"    value={Object.values(logs).flat().reduce((a,e)=>a+(e.sets?.length||0),0)}/>
+            <SC icon="📅" label="Workout Days"  value={Object.values(logs).filter(v=>v.length>0).length}/>
+            <SC icon="🏆" label="PRs Tracked"   value={Object.keys(prs).length}/>
+            <SC icon="📆" label="Training Week" value={week}/>
+          </div>
+          {authState==="ready"&&sheetIdRef.current&&(
+            <div style={{background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:20}}>📊</span>
+              <div>
+                <div style={{fontWeight:600,fontSize:13}}>Google Sheets Connected</div>
+                <a href={`https://docs.google.com/spreadsheets/d/${sheetIdRef.current}`} target="_blank" rel="noreferrer" style={{fontSize:12,color:"#22c55e"}}>View full spreadsheet ↗</a>
+              </div>
+            </div>
+          )}
+          <div style={{fontSize:13,fontWeight:600,color:"#94a3b8",marginBottom:10}}>Recent Entries</div>
+          {Object.entries(logs).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,5).flatMap(([d,entries])=>
+            entries.map(e=>{
+              const ex=ALL_EX[e.exerciseId],w=WORKOUTS[e.workoutId];
+              const best=e.sets?.reduce((b,s)=>vol(parseFloat(s.weight),parseInt(s.reps))>vol(parseFloat(b?.weight),parseInt(b?.reps))?s:b,e.sets[0]);
+              return (
+                <div key={e.id} style={{background:"rgba(255,255,255,0.04)",borderRadius:10,padding:"10px 12px",marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:13}}>{ex?.name}</div>
+                    <div style={{fontSize:11,color:"#64748b"}}>{d} · {w?.icon} {w?.label}</div>
+                  </div>
+                  {best&&<div style={{fontWeight:700,color:"#94a3b8",fontSize:13}}>{best.weight}kg×{best.reps}</div>}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* MODAL */}
+      {modal&&(
+        <div style={{position:"fixed",inset:0,zIndex:100,background:"rgba(0,0,0,0.75)",backdropFilter:"blur(6px)",overflowY:"auto"}}
+          onClick={e=>{if(e.target===e.currentTarget)setModal(null);}}>
+          <div style={{background:"#0f172a",maxWidth:480,margin:"0 auto",minHeight:"100vh",borderLeft:"1px solid rgba(255,255,255,0.06)",borderRight:"1px solid rgba(255,255,255,0.06)"}}>
+            <div style={{position:"sticky",top:0,zIndex:10,background:"rgba(15,23,42,0.98)",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"13px 16px",display:"flex",alignItems:"center",gap:10}}>
+              {modal.step!=="day"&&(
+                <button onClick={()=>setModal(p=>({...p,step:modal.step==="log"||modal.step==="pickEx"?"pick":modal.step==="edit"?"day":"day"}))}
+                  style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#94a3b8",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontSize:14}}>‹</button>
+              )}
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:15,color:"#f8fafc"}}>
+                  {modal.step==="day"    && modal.label}
+                  {modal.step==="pick"   && "Choose Workout"}
+                  {modal.step==="pickEx" && `${WORKOUTS[modal.workoutId]?.icon} ${WORKOUTS[modal.workoutId]?.label}`}
+                  {(modal.step==="log"||modal.step==="edit") && ALL_EX[modal.exerciseId]?.name}
+                </div>
+                {modal.step==="day"&&<div style={{fontSize:11,color:"#475569"}}>{(logs[modal.dk]||[]).length} entries</div>}
+                {(modal.step==="log"||modal.step==="edit")&&<div style={{fontSize:11,color:"#475569"}}>{WORKOUTS[modal.workoutId]?.label}</div>}
+              </div>
+              <button onClick={()=>setModal(null)} style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#94a3b8",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontSize:16}}>✕</button>
+            </div>
+
+            {syncing&&(
+              <div style={{background:"rgba(59,130,246,0.1)",padding:"6px 16px",fontSize:11,color:"#60a5fa",display:"flex",alignItems:"center",gap:6}}>
+                <Spinner color="#60a5fa"/><span>{syncMsg}</span>
+              </div>
+            )}
+
+            {flash&&(
+              <div style={{background:"rgba(234,179,8,0.15)",border:"1px solid rgba(234,179,8,0.4)",margin:"12px 16px",borderRadius:12,padding:"12px 16px"}}>
+                <div style={{fontWeight:700,color:"#fbbf24",marginBottom:6}}>🏆 New PR{flash.length>1?"s":""}!</div>
+                {flash.map(n=><div key={n} style={{fontSize:13,color:"#fde68a"}}>• {n}</div>)}
+                <button onClick={()=>setFlash(null)} style={{marginTop:10,background:"transparent",border:"1px solid rgba(234,179,8,0.4)",color:"#fbbf24",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:13}}>Dismiss</button>
+              </div>
+            )}
+
+            <div style={{padding:"12px 16px",paddingBottom:90}}>
+              {modal.step==="day"    && <DayView dk={modal.dk} entries={logs[modal.dk]||[]} onAddNew={goPickWorkout} onEdit={goEditEntry} onDelete={deleteEntry}/>}
+              {modal.step==="pick"   && <PickWorkout week={week} suggestedLeg={suggestedLeg} onPick={goPickExercise}/>}
+              {modal.step==="pickEx" && <PickExercise workout={WORKOUTS[modal.workoutId]} loggedIds={(logs[modal.dk]||[]).filter(e=>e.workoutId===modal.workoutId).map(e=>e.exerciseId)} onPick={eid=>goLogExercise(modal.workoutId,eid)}/>}
+              {(modal.step==="log"||modal.step==="edit")&&(()=>{
+                const ex=ALL_EX[modal.exerciseId];
+                if(!ex) return null;
+                return ex.isSwimming
+                  ?<SwimForm form={form} setForm={setForm} onSave={saveEntry}/>
+                  :<ExForm ex={ex} form={form} setForm={setForm} pr={prs[ex.id]} onSave={saveEntry} isEdit={modal.step==="edit"}/>;
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// SUB-COMPONENTS
+// ─────────────────────────────────────────────
+function DayView({entries,onAddNew,onEdit,onDelete}){
+  const [confirmDelete,setConfirmDelete]=useState(null);
+  return (
+    <div>
+      {entries.length===0&&(
+        <div style={{textAlign:"center",padding:"32px 0",color:"#475569"}}>
+          <div style={{fontSize:36,marginBottom:8}}>📋</div>
+          <div style={{fontWeight:600,marginBottom:4}}>No exercises logged yet</div>
+          <div style={{fontSize:12}}>Tap below to add your first exercise</div>
+        </div>
+      )}
+      {entries.map(entry=>{
+        const ex=ALL_EX[entry.exerciseId],w=WORKOUTS[entry.workoutId];
+        const isConf=confirmDelete===entry.id;
+        return (
+          <div key={entry.id} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,padding:"12px 14px",marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,color:"#f1f5f9"}}>{ex?.name||entry.exerciseId}</div>
+                <div style={{fontSize:11,color:"#64748b"}}>{w?.icon} {w?.label} · {w?.subtitle}</div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>onEdit(entry.id)} style={{background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.3)",color:"#60a5fa",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:600}}>Edit</button>
+                {!isConf
+                  ?<button onClick={()=>setConfirmDelete(entry.id)} style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",color:"#f87171",borderRadius:7,padding:"4px 8px",cursor:"pointer",fontSize:12}}>✕</button>
+                  :<button onClick={()=>{onDelete(entry.id);setConfirmDelete(null);}} style={{background:"rgba(239,68,68,0.25)",border:"1px solid rgba(239,68,68,0.5)",color:"#f87171",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:700}}>Delete?</button>
+                }
+              </div>
+            </div>
+            {entry.sets&&(
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {entry.sets.map((s,i)=>(
+                  <div key={i} style={{background:"rgba(255,255,255,0.06)",borderRadius:7,padding:"4px 10px",fontSize:12,color:"#94a3b8"}}>
+                    S{i+1}: {ex?.bodyweight?`${s.reps} reps`:`${s.weight||"?"}kg × ${s.reps}`}
+                  </div>
+                ))}
+              </div>
+            )}
+            {entry.swimLaps&&(
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {Object.entries(entry.swimLaps).filter(([,v])=>v).map(([stroke,laps])=>(
+                  <div key={stroke} style={{background:"rgba(255,255,255,0.06)",borderRadius:7,padding:"4px 10px",fontSize:12,color:"#94a3b8",textTransform:"capitalize"}}>
+                    {stroke}: {laps} laps ({(parseFloat(laps)*50).toFixed(0)}m)
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <button onClick={onAddNew} style={{width:"100%",background:"rgba(34,197,94,0.12)",border:"2px dashed rgba(34,197,94,0.4)",borderRadius:12,padding:"14px",cursor:"pointer",color:"#22c55e",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+        <span style={{fontSize:20}}>+</span> Add Exercise
+      </button>
+    </div>
+  );
+}
+
+function PickWorkout({week,suggestedLeg,onPick}){
+  return (
+    <div>
+      <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>Which workout are you doing?</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        {Object.values(WORKOUTS).map(w=>{
+          const rec=(w.id==="push1"||w.id==="push2")&&(week<=2?w.id==="push1":w.id==="push2")||(w.id==="pull1"||w.id==="pull2")&&(week<=2?w.id==="pull1":w.id==="pull2")||(w.id==="leg1"||w.id==="leg2")&&w.id===suggestedLeg;
+          return (
+            <button key={w.id} onClick={()=>onPick(w.id)} style={{background:rec?"rgba(34,197,94,0.1)":"rgba(255,255,255,0.04)",border:rec?"1px solid rgba(34,197,94,0.4)":"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"14px 8px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
+              <span style={{fontSize:24}}>{w.icon}</span>
+              <span style={{fontWeight:700,color:"#f1f5f9",fontSize:13}}>{w.label}</span>
+              <span style={{fontSize:11,color:"#64748b"}}>{w.subtitle}</span>
+              {rec&&<span style={{fontSize:10,color:"#22c55e",fontWeight:700}}>SUGGESTED</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PickExercise({workout,loggedIds,onPick}){
+  return (
+    <div>
+      <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>Pick an exercise to log:</div>
+      {workout.exercises.map(ex=>{
+        const done=loggedIds.includes(ex.id);
+        return (
+          <button key={ex.id} onClick={()=>onPick(ex.id)} style={{width:"100%",background:done?"rgba(34,197,94,0.08)":"rgba(255,255,255,0.04)",border:done?"1px solid rgba(34,197,94,0.3)":"1px solid rgba(255,255,255,0.07)",borderRadius:11,padding:"12px 14px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7,textAlign:"left"}}>
+            <div>
+              <div style={{fontWeight:600,fontSize:13,color:"#f1f5f9"}}>{ex.name}</div>
+              <div style={{fontSize:11,color:"#64748b"}}>{ex.sets} sets · {ex.repRange} reps</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              {done&&<span style={{fontSize:18,color:"#22c55e"}}>✓</span>}
+              <span style={{color:"#64748b",fontSize:16}}>›</span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExForm({ex,form,setForm,pr,onSave,isEdit}){
+  const sets=form.sets||[];
+  function upd(i,f,v){setForm(p=>{const s=[...p.sets];s[i]={...s[i],[f]:v};return{...p,sets:s};});}
+  const sug=prSug(pr);
+  return (
+    <div>
+      <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:10,padding:"10px 12px",marginBottom:14}}>
+        <div style={{fontSize:12,color:"#64748b",marginBottom:2}}>{ex.sets} sets × {ex.repRange} reps</div>
+        {pr&&<div style={{fontSize:12,color:"#64748b"}}>PR: <span style={{color:"#fbbf24",fontWeight:700}}>{ex.bodyweight?`${pr.reps} reps`:`${pr.weight}kg × ${pr.reps}`}</span> <span style={{color:"#475569"}}>({pr.date})</span></div>}
+        {sug&&!ex.bodyweight&&!ex.stepsOnly&&<div style={{fontSize:12,color:"#3b82f6",marginTop:3}}>💡 {sug}</div>}
+      </div>
+      {ex.stepsOnly
+        ?<div style={{color:"#94a3b8",fontSize:13,padding:"8px 0"}}>Bodyweight — 3 sets of 20 steps. No data entry needed.</div>
+        :sets.map((set,i)=>{
+          const opts=repOpts(i,ex);
+          return (
+            <div key={i} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+              <div style={{fontSize:12,color:"#64748b",fontWeight:700,marginBottom:10}}>SET {i+1}</div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                {ex.trackWeight&&(
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <input type="number" inputMode="decimal" step="0.5" min="0" value={set.weight} onChange={e=>upd(i,"weight",e.target.value)} placeholder="kg"
+                      style={{width:64,background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"8px",fontSize:16,textAlign:"center",fontWeight:700}}/>
+                    <span style={{fontSize:12,color:"#64748b"}}>kg</span>
+                  </div>
+                )}
+                <select value={set.reps} onChange={e=>upd(i,"reps",parseInt(e.target.value))} style={{flex:1,background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"8px 10px",fontSize:15}}>
+                  {opts.map(r=><option key={r} value={r} style={{background:"#1e293b"}}>{r} reps</option>)}
+                </select>
+              </div>
+            </div>
+          );
+        })
+      }
+      <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
+        {isEdit?"Update Entry ✓":"Save & Back ✓"}
+      </button>
+    </div>
+  );
+}
+
+function SwimForm({form,setForm,onSave}){
+  function upd(s,v){setForm(p=>({...p,laps:{...p.laps,[s]:v}}));}
+  return (
+    <div>
+      <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>1 lap = 50 meters</div>
+      {["freestyle","butterfly","breaststroke","backstroke"].map(s=>{
+        const val=form.laps?.[s]||"",m=val?(parseFloat(val)*50).toFixed(0):null;
+        return (
+          <div key={s} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:11,padding:"12px 14px",marginBottom:8}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:8,textTransform:"capitalize"}}>{s}</div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <input type="number" inputMode="decimal" step="0.5" min="0" value={val} onChange={e=>upd(s,e.target.value)} placeholder="laps"
+                style={{width:72,background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"8px",fontSize:16,textAlign:"center"}}/>
+              <span style={{fontSize:12,color:"#64748b"}}>laps</span>
+              {m&&<span style={{fontSize:13,color:"#22c55e",fontWeight:700}}>= {m}m</span>}
+            </div>
+          </div>
+        );
+      })}
+      <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
+        Save & Back ✓
+      </button>
+    </div>
+  );
+}
+
+function Spinner({color="#94a3b8"}){
+  return (
+    <div style={{width:12,height:12,border:`2px solid ${color}33`,borderTop:`2px solid ${color}`,borderRadius:"50%",flexShrink:0,
+      animation:"spin 0.8s linear infinite"}}/>
+  );
+}
+function LI({bg,border,label}){
+  return <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:13,height:13,borderRadius:4,background:bg||"transparent",border:border?`2px solid ${border}`:"none"}}/><span style={{fontSize:11,color:"#64748b"}}>{label}</span></div>;
+}
+function SC({icon,label,value}){
+  return (
+    <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:"16px 14px"}}>
+      <div style={{fontSize:22,marginBottom:6}}>{icon}</div>
+      <div style={{fontSize:26,fontWeight:800,color:"#f8fafc",letterSpacing:"-0.5px"}}>{value}</div>
+      <div style={{fontSize:12,color:"#64748b",marginTop:2}}>{label}</div>
+    </div>
+  );
+}
+const NB={background:"rgba(255,255,255,0.07)",border:"none",color:"#94a3b8",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:18,fontWeight:700};
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+</body>
+</html>
