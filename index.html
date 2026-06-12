@@ -424,7 +424,9 @@ function App(){
     if(ex?.trackWeight&&pr?.weight) prefillW=String(pr.reps>=10?pr.weight+2.5:pr.weight);
     const initSets = ex ? Array.from({length:ex.sets},(_,i)=>({ weight:ex.trackWeight?prefillW:"", reps:repOpts(i,ex)[0] })) : [];
     setForm(ex?.isSwimming?{laps:{}}:{sets:initSets});
-    setModal(p=>({...p,step:"log",workoutId,exerciseId}));
+    const exList = WORKOUTS[workoutId]?.exercises || [];
+    const idx = exList.findIndex(e=>e.id===exerciseId);
+    setModal(p=>({...p,step:"log",workoutId,exerciseId,_progress:{cur:idx+1,total:exList.length}}));
   }
 
   function goEditEntry(entryId){
@@ -534,6 +536,23 @@ function App(){
     }
 
     if(newPrNames.length) setFlash(newPrNames);
+
+    // Auto-advance to next exercise (only when adding, not editing)
+    if(!isEdit){
+      const workout = WORKOUTS[workoutId];
+      const exList = workout?.exercises || [];
+      const curIdx = exList.findIndex(e=>e.id===exerciseId);
+      const nextEx = exList[curIdx+1];
+      if(nextEx){
+        const pr2 = updatedPrs[nextEx.id];
+        let prefillW2="";
+        if(nextEx.trackWeight&&pr2?.weight) prefillW2=String(pr2.reps>=10?pr2.weight+2.5:pr2.weight);
+        const initSets2 = Array.from({length:nextEx.sets||0},(_,i)=>({ weight:nextEx.trackWeight?prefillW2:"", reps:repOpts(i,nextEx)[0] }));
+        setForm(nextEx.isSwimming?{laps:{}}:{sets:initSets2});
+        setModal(p=>({...p,step:"log",exerciseId:nextEx.id,_progress:{cur:curIdx+2,total:exList.length}}));
+        return;
+      }
+    }
     setModal(p=>({...p,step:"day"}));
   }
 
@@ -720,7 +739,7 @@ function App(){
                   {(modal.step==="log"||modal.step==="edit") && ALL_EX[modal.exerciseId]?.name}
                 </div>
                 {modal.step==="day"&&<div style={{fontSize:11,color:"#475569"}}>{(logs[modal.dk]||[]).length} entries</div>}
-                {(modal.step==="log"||modal.step==="edit")&&<div style={{fontSize:11,color:"#475569"}}>{WORKOUTS[modal.workoutId]?.label}</div>}
+                {(modal.step==="log"||modal.step==="edit")&&<div style={{fontSize:11,color:"#475569"}}>{WORKOUTS[modal.workoutId]?.label}{modal.step==="log"&&modal._progress?` · ${modal._progress.cur} / ${modal._progress.total}`:""}</div>}
               </div>
               <button onClick={()=>setModal(null)} style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#94a3b8",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontSize:16}}>✕</button>
             </div>
@@ -746,9 +765,11 @@ function App(){
               {(modal.step==="log"||modal.step==="edit")&&(()=>{
                 const ex=ALL_EX[modal.exerciseId];
                 if(!ex) return null;
+                const exList = WORKOUTS[modal.workoutId]?.exercises||[];
+                const isLast = modal.step==="log" && exList[exList.length-1]?.id===modal.exerciseId;
                 return ex.isSwimming
-                  ?<SwimForm form={form} setForm={setForm} onSave={saveEntry}/>
-                  :<ExForm ex={ex} form={form} setForm={setForm} pr={prs[ex.id]} onSave={saveEntry} isEdit={modal.step==="edit"}/>;
+                  ?<SwimForm form={form} setForm={setForm} onSave={saveEntry} isLast={isLast}/>
+                  :<ExForm ex={ex} form={form} setForm={setForm} pr={prs[ex.id]} onSave={saveEntry} isEdit={modal.step==="edit"} isLast={isLast}/>;
               })()}
             </div>
           </div>
@@ -862,7 +883,7 @@ function PickExercise({workout,loggedIds,onPick}){
   );
 }
 
-function ExForm({ex,form,setForm,pr,onSave,isEdit}){
+function ExForm({ex,form,setForm,pr,onSave,isEdit,isLast}){
   const sets=form.sets||[];
   function upd(i,f,v){setForm(p=>{const s=[...p.sets];s[i]={...s[i],[f]:v};return{...p,sets:s};});}
   const sug=prSug(pr);
@@ -897,13 +918,13 @@ function ExForm({ex,form,setForm,pr,onSave,isEdit}){
         })
       }
       <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
-        {isEdit?"Update Entry ✓":"Save & Back ✓"}
+        {isEdit?"Update Entry ✓":isLast?"Finish Workout ✓":"Save & Next →"}
       </button>
     </div>
   );
 }
 
-function SwimForm({form,setForm,onSave}){
+function SwimForm({form,setForm,onSave,isLast}){
   function upd(s,v){setForm(p=>({...p,laps:{...p.laps,[s]:v}}));}
   return (
     <div>
@@ -923,7 +944,7 @@ function SwimForm({form,setForm,onSave}){
         );
       })}
       <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
-        Save & Back ✓
+        {isLast?"Finish Workout ✓":"Save & Next →"}
       </button>
     </div>
   );
