@@ -109,6 +109,10 @@ const DAYS = ["Su","Mo","Tu","We","Th","Fr","Sa"];
 
 function dkey(y,m,d){ return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 function fmtDate(y,m,d){ return new Date(y,m,d).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"}); }
+function fmtDateFromKey(key){
+  const [y,m,d] = key.split("-").map(Number);
+  return fmtDate(y, m-1, d);
+}
 function vol(w,r){ return (w||0)*(r||0); }
 function repOpts(si,ex){
   if(ex.bodyweight) return [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
@@ -171,6 +175,7 @@ async function findOrCreateSpreadsheet(token){
       { properties:{ title:"Workouts" } },
       { properties:{ title:"PRs" } },
       { properties:{ title:"Settings" } },
+      { properties:{ title:"BodyComp" } },
     ]
   });
   const id = created.spreadsheetId;
@@ -182,6 +187,7 @@ async function findOrCreateSpreadsheet(token){
       { range:"Workouts!A1", values:[["id","date","dateLabel","workoutId","workoutLabel","exerciseId","exerciseName","set1_weight","set1_reps","set2_weight","set2_reps","set3_weight","set3_reps","set4_weight","set4_reps","set5_weight","set5_reps","swimLaps","savedAt"]] },
       { range:"PRs!A1",      values:[["exerciseId","exerciseName","weight","reps","date","updatedAt"]] },
       { range:"Settings!A1", values:[["key","value"]] },
+      { range:"BodyComp!A1", values:[["id","date","dateLabel","weight","muscleMassKg","muscleMassPct","bodyFatKg","bodyFatPct","bodyWaterKg","bodyWaterPct","bmr","savedAt"]] },
     ]
   });
 
@@ -189,9 +195,22 @@ async function findOrCreateSpreadsheet(token){
   return id;
 }
 
+// Migration: ensure BodyComp sheet exists for spreadsheets created before this feature
+async function ensureBodyCompSheet(token, sheetId){
+  const meta = await sheetsRequest(token, `/${sheetId}?fields=sheets.properties`);
+  const exists = meta.sheets?.some(s=>s.properties.title==="BodyComp");
+  if(exists) return;
+  await sheetsRequest(token, `/${sheetId}:batchUpdate`, "POST", {
+    requests:[{ addSheet:{ properties:{ title:"BodyComp" } } }]
+  });
+  await sheetsRequest(token, `/${sheetId}/values/BodyComp!A1?valueInputOption=RAW`, "PUT", {
+    values:[["id","date","dateLabel","weight","muscleMassKg","muscleMassPct","bodyFatKg","bodyFatPct","bodyWaterKg","bodyWaterPct","bmr","savedAt"]]
+  });
+}
+
 async function loadAllData(token, sheetId){
-  const res = await sheetsRequest(token, `/${sheetId}/values:batchGet?ranges=Workouts!A1:S10000&ranges=PRs!A1:F500&ranges=Settings!A1:B50`);
-  const [wSheet, prSheet, settSheet] = res.valueRanges || [];
+  const res = await sheetsRequest(token, `/${sheetId}/values:batchGet?ranges=Workouts!A1:S10000&ranges=PRs!A1:F500&ranges=Settings!A1:B50&ranges=BodyComp!A1:L500`);
+  const [wSheet, prSheet, settSheet, bcSheet] = res.valueRanges || [];
 
   // Parse workouts
   const wRows = wSheet?.values || [];
@@ -200,7 +219,13 @@ async function loadAllData(token, sheetId){
   wRows.slice(1).forEach(row => {
     const r = {};
     wHeaders.forEach((h,i) => { r[h] = row[i]||""; });
-    if(!r.id||!r.date) return;
+    if(!r.id) return;
+    // Repair malformed 'date' column (legacy bug): valid format is YYYY-MM-DD
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(r.date)){
+      const m = r.id.match(/^(\d{4}-\d{2}-\d{2})_/);
+      r.date = m ? m[1] : r.date;
+    }
+    if(!r.date) return;
     const sets = [];
     for(let i=1;i<=5;i++){
       if(r[`set${i}_reps`]) sets.push({ weight:r[`set${i}_weight`]||"", reps:parseInt(r[`set${i}_reps`])||0 });
@@ -227,24 +252,68 @@ async function loadAllData(token, sheetId){
   const settings = {};
   stRows.slice(1).forEach(row => { if(row[0]) settings[row[0]]=row[1]||""; });
 
-  return { logs, prs, settings };
+  // Parse BodyComp
+  const bcRows = bcSheet?.values || [];
+  const bcHeaders = bcRows[0] || [];
+  const bodyComp = [];
+  bcRows.slice(1).forEach((row,idx) => {
+    const r = {};
+    bcHeaders.forEach((h,i) => { r[h]=row[i]||""; });
+    if(!r.id) return;
+    bodyComp.push({
+      id:r.id, date:r.date, dateLabel:r.dateLabel,
+      weight: r.weight?parseFloat(r.weight):null,
+      muscleMassKg: r.muscleMassKg?parseFloat(r.muscleMassKg):null,
+      muscleMassPct: r.muscleMassPct?parseFloat(r.muscleMassPct):null,
+      bodyFatKg: r.bodyFatKg?parseFloat(r.bodyFatKg):null,
+      bodyFatPct: r.bodyFatPct?parseFloat(r.bodyFatPct):null,
+      bodyWaterKg: r.bodyWaterKg?parseFloat(r.bodyWaterKg):null,
+      bodyWaterPct: r.bodyWaterPct?parseFloat(r.bodyWaterPct):null,
+      bmr: r.bmr?parseFloat(r.bmr):null,
+      savedAt: r.savedAt, _row: idx+2,
+    });
+  });
+  bodyComp.sort((a,b)=>a.date.localeCompare(b.date));
+
+  return { logs, prs, settings, bodyComp };
 }
 
-async function appendRow(token, sheetId, entry, dateLabel){
+async function appendBodyComp(token, sheetId, entry){
+  const row = [entry.id, entry.date, entry.dateLabel, entry.weight??"", entry.muscleMassKg??"", entry.muscleMassPct??"", entry.bodyFatKg??"", entry.bodyFatPct??"", entry.bodyWaterKg??"", entry.bodyWaterPct??"", entry.bmr??"", new Date().toISOString()];
+  await sheetsRequest(token, `/${sheetId}/values/BodyComp!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, "POST", { values:[row] });
+}
+
+async function updateBodyComp(token, sheetId, entry, rowNum){
+  const row = [entry.id, entry.date, entry.dateLabel, entry.weight??"", entry.muscleMassKg??"", entry.muscleMassPct??"", entry.bodyFatKg??"", entry.bodyFatPct??"", entry.bodyWaterKg??"", entry.bodyWaterPct??"", entry.bmr??"", new Date().toISOString()];
+  await sheetsRequest(token, `/${sheetId}/values/BodyComp!A${rowNum}:L${rowNum}?valueInputOption=RAW`, "PUT", { values:[row] });
+}
+
+async function deleteBodyCompRow(token, sheetId, sheetGid, rowNum){
+  await sheetsRequest(token, `/${sheetId}:batchUpdate`, "POST", {
+    requests:[{ deleteDimension:{ range:{ sheetId:sheetGid, dimension:"ROWS", startIndex:rowNum-1, endIndex:rowNum } } }]
+  });
+}
+
+async function getBodyCompGid(token, sheetId){
+  const meta = await sheetsRequest(token, `/${sheetId}?fields=sheets.properties`);
+  return meta.sheets?.find(s=>s.properties.title==="BodyComp")?.properties?.sheetId || 0;
+}
+
+async function appendRow(token, sheetId, entry, dateKeyVal, dateLabel){
   const ex = ALL_EX[entry.exerciseId], w = WORKOUTS[entry.workoutId];
   const sets = entry.sets||[];
   const setCells = [];
   for(let i=0;i<5;i++) setCells.push(sets[i]?.weight||"", sets[i]?.reps||"");
-  const row = [entry.id, entry.id.split("_").slice(0,3).join("-"), dateLabel, entry.workoutId, w?.label||"", entry.exerciseId, ex?.name||"", ...setCells, entry.swimLaps?JSON.stringify(entry.swimLaps):"", new Date().toISOString()];
+  const row = [entry.id, dateKeyVal, dateLabel, entry.workoutId, w?.label||"", entry.exerciseId, ex?.name||"", ...setCells, entry.swimLaps?JSON.stringify(entry.swimLaps):"", new Date().toISOString()];
   await sheetsRequest(token, `/${sheetId}/values/Workouts!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, "POST", { values:[row] });
 }
 
-async function updateRow(token, sheetId, entry, dateLabel, rowNum){
+async function updateRow(token, sheetId, entry, dateKeyVal, dateLabel, rowNum){
   const ex = ALL_EX[entry.exerciseId], w = WORKOUTS[entry.workoutId];
   const sets = entry.sets||[];
   const setCells = [];
   for(let i=0;i<5;i++) setCells.push(sets[i]?.weight||"", sets[i]?.reps||"");
-  const row = [entry.id, entry.id.split("_").slice(0,3).join("-"), dateLabel, entry.workoutId, w?.label||"", entry.exerciseId, ex?.name||"", ...setCells, entry.swimLaps?JSON.stringify(entry.swimLaps):"", new Date().toISOString()];
+  const row = [entry.id, dateKeyVal, dateLabel, entry.workoutId, w?.label||"", entry.exerciseId, ex?.name||"", ...setCells, entry.swimLaps?JSON.stringify(entry.swimLaps):"", new Date().toISOString()];
   await sheetsRequest(token, `/${sheetId}/values/Workouts!A${rowNum}:S${rowNum}?valueInputOption=RAW`, "PUT", { values:[row] });
 }
 
@@ -314,6 +383,7 @@ function App(){
   const [month,   setMonth]   = useState(today.getMonth());
   const [year,    setYear]    = useState(today.getFullYear());
   const [logs,    setLogs]    = useState({});
+  const [bodyComp, setBodyComp] = useState([]);
   const [prs,     setPrs]     = useState({...INITIAL_PRS});
   const [week,    setWeek]    = useState(2);
   const [lastLeg, setLastLeg] = useState("leg2");
@@ -333,6 +403,7 @@ function App(){
   const prRowsRef  = useRef([]);  // raw PR rows for upsert
   const settRowsRef= useRef([]);  // raw settings rows
   const workoutRowsRef = useRef({}); // entryId -> rowNum
+  const bodyCompRowsRef = useRef({}); // entryId -> rowNum
 
   // Load from localStorage as immediate fallback
   useEffect(() => {
@@ -340,10 +411,77 @@ function App(){
       const ll = JSON.parse(localStorage.getItem("gl_logs")||"{}");
       const lp = {...INITIAL_PRS,...JSON.parse(localStorage.getItem("gl_prs")||"{}")};
       setLogs(ll); setPrs(lp);
+      setBodyComp(JSON.parse(localStorage.getItem("gl_bodycomp")||"[]"));
       setWeek(parseInt(localStorage.getItem("gl_week")||"2"));
       setLastLeg(localStorage.getItem("gl_lastleg")||"leg2");
     } catch {}
   }, []);
+
+  async function syncFromSheets(token, sid){
+    await ensureBodyCompSheet(token, sid);
+    // Get sheet GID for Workouts tab (for row deletion)
+    const meta = await sheetsRequest(token, `/${sid}?fields=sheets.properties`);
+    const workoutsSheet = meta.sheets?.find(s=>s.properties.title==="Workouts");
+    sheetIdRef.workoutsGid = workoutsSheet?.properties?.sheetId || 0;
+
+    const {logs:l, prs:p, settings:s, bodyComp:bc} = await loadAllData(token, sid);
+
+    // Build row map
+    const rowMap = {};
+    Object.values(l).flat().forEach(e=>{ if(e._row) rowMap[e.id]=e._row; });
+    workoutRowsRef.current = rowMap;
+
+    // Strip _row from entries
+    const cleanLogs = {};
+    Object.entries(l).forEach(([d,entries])=>{
+      cleanLogs[d] = entries.map(({_row,...rest})=>rest);
+    });
+
+    // MERGE with existing local logs (never lose local-only entries that
+    // may not have synced to Sheets yet, e.g. due to a network blip).
+    setLogs(prevLogs=>{
+      const merged = { ...cleanLogs };
+      Object.entries(prevLogs).forEach(([d, localEntries])=>{
+        const sheetEntries = merged[d] || [];
+        const sheetIds = new Set(sheetEntries.map(e=>e.id));
+        const onlyLocal = localEntries.filter(e=>!sheetIds.has(e.id));
+        if(onlyLocal.length){
+          merged[d] = [...sheetEntries, ...onlyLocal];
+          // Try to push these missing entries to Sheets now
+          onlyLocal.forEach(async entry=>{
+            try{
+              await appendRow(token, sid, entry, d, fmtDateFromKey(d));
+              const dResp=await sheetsRequest(token,`/${sid}/values/Workouts!A:A`);
+              workoutRowsRef.current={...workoutRowsRef.current,[entry.id]:(dResp.values?.length||1)};
+            }catch(e){ console.error("Failed to push local-only entry", entry.id, e); }
+          });
+        } else if(sheetEntries.length===0 && localEntries.length){
+          merged[d]=localEntries;
+        }
+      });
+      localStorage.setItem("gl_logs", JSON.stringify(merged));
+      return merged;
+    });
+
+    setPrs(p);
+    if(s.trainingWeek) setWeek(parseInt(s.trainingWeek)||2);
+    if(s.lastLeg) setLastLeg(s.lastLeg);
+
+    // Cache raw rows for upserts
+    const raw = await sheetsRequest(token, `/${sid}/values:batchGet?ranges=PRs!A1:F500&ranges=Settings!A1:B50`);
+    prRowsRef.current  = (raw.valueRanges?.[0]?.values||[]).slice(1);
+    settRowsRef.current= (raw.valueRanges?.[1]?.values||[]).slice(1);
+
+    localStorage.setItem("gl_prs",  JSON.stringify(p));
+
+    // BodyComp: build row map and set state
+    const bcRowMap = {};
+    bc.forEach(e=>{ if(e._row) bcRowMap[e.id]=e._row; });
+    bodyCompRowsRef.current = bcRowMap;
+    const cleanBc = bc.map(({_row,...rest})=>rest);
+    setBodyComp(cleanBc);
+    localStorage.setItem("gl_bodycomp", JSON.stringify(cleanBc));
+  }
 
   async function handleSignIn(){
     setAuthState("signing-in");
@@ -356,37 +494,7 @@ function App(){
       const sid = await findOrCreateSpreadsheet(token);
       sheetIdRef.current = sid;
 
-      // Get sheet GID for Workouts tab (for row deletion)
-      const meta = await sheetsRequest(token, `/${sid}?fields=sheets.properties`);
-      const workoutsSheet = meta.sheets?.find(s=>s.properties.title==="Workouts");
-      sheetIdRef.workoutsGid = workoutsSheet?.properties?.sheetId || 0;
-
-      const {logs:l, prs:p, settings:s} = await loadAllData(token, sid);
-
-      // Build row map
-      const rowMap = {};
-      Object.values(l).flat().forEach(e=>{ if(e._row) rowMap[e.id]=e._row; });
-      workoutRowsRef.current = rowMap;
-
-      // Strip _row from entries
-      const cleanLogs = {};
-      Object.entries(l).forEach(([d,entries])=>{
-        cleanLogs[d] = entries.map(({_row,...rest})=>rest);
-      });
-
-      setLogs(cleanLogs);
-      setPrs(p);
-      if(s.trainingWeek) setWeek(parseInt(s.trainingWeek)||2);
-      if(s.lastLeg) setLastLeg(s.lastLeg);
-
-      // Cache raw rows for upserts
-      const raw = await sheetsRequest(token, `/${sid}/values:batchGet?ranges=PRs!A1:F500&ranges=Settings!A1:B50`);
-      prRowsRef.current  = (raw.valueRanges?.[0]?.values||[]).slice(1);
-      settRowsRef.current= (raw.valueRanges?.[1]?.values||[]).slice(1);
-
-      // Mirror to localStorage
-      localStorage.setItem("gl_logs", JSON.stringify(cleanLogs));
-      localStorage.setItem("gl_prs",  JSON.stringify(p));
+      await syncFromSheets(token, sid);
 
       setAuthState("ready");
       setSyncMsg("✓ Synced with Google Sheets");
@@ -399,6 +507,22 @@ function App(){
       setSyncing(false);
       setSyncMsg("");
     }
+  }
+
+  async function handleResync(){
+    const token=getToken();
+    if(!token||!sheetIdRef.current){
+      setSyncMsg("⚠️ Not signed in"); setTimeout(()=>setSyncMsg(""),2000); return;
+    }
+    setSyncing(true); setSyncMsg("Re-syncing from Google Sheets…");
+    try{
+      await syncFromSheets(token, sheetIdRef.current);
+      setSyncMsg("✓ Re-synced"); setTimeout(()=>setSyncMsg(""),2000);
+    } catch(err){
+      console.error(err);
+      setSyncMsg("⚠️ Re-sync failed");
+    }
+    setSyncing(false);
   }
 
   function getToken(){
@@ -508,10 +632,10 @@ function App(){
       try{
         if(isEdit){
           const rowNum=workoutRowsRef.current[entryId];
-          if(rowNum) await updateRow(token,sheetIdRef.current,entry,label,rowNum);
-          else { await appendRow(token,sheetIdRef.current,entry,label); }
+          if(rowNum) await updateRow(token,sheetIdRef.current,entry,key,label,rowNum);
+          else { await appendRow(token,sheetIdRef.current,entry,key,label); }
         } else {
-          await appendRow(token,sheetIdRef.current,entry,label);
+          await appendRow(token,sheetIdRef.current,entry,key,label);
           // Get new row number
           const d=await sheetsRequest(token,`/${sheetIdRef.current}/values/Workouts!A:A`);
           const rowNum=(d.values?.length||1);
@@ -565,6 +689,65 @@ function App(){
     }
   }
 
+  async function saveBodyEntry(data, editId){
+    const today2 = new Date();
+    const dateKeyVal = dkey(today2.getFullYear(), today2.getMonth(), today2.getDate());
+    const dateLabel = fmtDate(today2.getFullYear(), today2.getMonth(), today2.getDate());
+    const id = editId || `bc_${dateKeyVal}_${Date.now()}`;
+    const entry = { id, date: editId ? (bodyComp.find(b=>b.id===editId)?.date||dateKeyVal) : dateKeyVal, dateLabel: editId ? (bodyComp.find(b=>b.id===editId)?.dateLabel||dateLabel) : dateLabel, ...data };
+
+    setBodyComp(prev=>{
+      const updated = editId ? prev.map(b=>b.id===editId?entry:b) : [...prev, entry];
+      updated.sort((a,b)=>a.date.localeCompare(b.date));
+      localStorage.setItem("gl_bodycomp", JSON.stringify(updated));
+      return updated;
+    });
+
+    const token=getToken();
+    if(token&&sheetIdRef.current){
+      setSyncing(true); setSyncMsg("Saving to Google Sheets…");
+      try{
+        if(editId){
+          const rowNum=bodyCompRowsRef.current[editId];
+          if(rowNum) await updateBodyComp(token,sheetIdRef.current,entry,rowNum);
+          else await appendBodyComp(token,sheetIdRef.current,entry);
+        } else {
+          await appendBodyComp(token,sheetIdRef.current,entry);
+          const d=await sheetsRequest(token,`/${sheetIdRef.current}/values/BodyComp!A:A`);
+          bodyCompRowsRef.current={...bodyCompRowsRef.current,[id]:(d.values?.length||1)};
+        }
+        setSyncMsg("✓ Saved"); setTimeout(()=>setSyncMsg(""),2000);
+      } catch(err){
+        console.error(err);
+        setSyncMsg("⚠️ Saved locally (Sheets sync failed)");
+      }
+      setSyncing(false);
+    }
+    setModal(null);
+  }
+
+  async function deleteBodyEntry(id){
+    const rowNum = bodyCompRowsRef.current[id];
+    setBodyComp(prev=>{
+      const updated = prev.filter(b=>b.id!==id);
+      localStorage.setItem("gl_bodycomp", JSON.stringify(updated));
+      return updated;
+    });
+    const token=getToken();
+    if(token&&sheetIdRef.current&&rowNum){
+      setSyncing(true); setSyncMsg("Deleting…");
+      try{
+        await deleteBodyCompRow(token, sheetIdRef.current, await getBodyCompGid(token,sheetIdRef.current), rowNum);
+        const newMap={...bodyCompRowsRef.current};
+        delete newMap[id];
+        Object.keys(newMap).forEach(k=>{ if(newMap[k]>rowNum) newMap[k]--; });
+        bodyCompRowsRef.current=newMap;
+        setSyncMsg("✓ Deleted"); setTimeout(()=>setSyncMsg(""),2000);
+      } catch{ setSyncMsg("⚠️ Sync failed"); }
+      setSyncing(false);
+    }
+  }
+
   // Calendar
   const firstDay    = new Date(year,month,1).getDay();
   const daysInMonth = new Date(year,month+1,0).getDate();
@@ -582,7 +765,7 @@ function App(){
           </div>
         </div>
         <div style={{display:"flex",gap:5,alignItems:"center"}}>
-          {[["cal","📅","Cal"],["prs","🏆","PRs"],["stats","📊","Stats"]].map(([v,ic,lbl])=>(
+          {[["cal","📅","Cal"],["prs","🏆","PRs"],["body","⚖️","Body"],["stats","📊","Stats"]].map(([v,ic,lbl])=>(
             <button key={v} onClick={()=>setTab(v)} style={{padding:"5px 10px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,background:tab===v?"#22c55e":"rgba(255,255,255,0.07)",color:tab===v?"#fff":"#94a3b8"}}>{ic} {lbl}</button>
           ))}
         </div>
@@ -607,7 +790,10 @@ function App(){
           </button>
         )}
         {authState==="ready" && (
-          <button onClick={()=>{tokenRef.current=null;sheetIdRef.current=null;setAuthState("idle");}} style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#64748b",borderRadius:8,padding:"5px 10px",cursor:"pointer",fontSize:11}}>Sign out</button>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={handleResync} disabled={syncing} style={{background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.3)",color:"#60a5fa",borderRadius:8,padding:"5px 10px",cursor:"pointer",fontSize:11,opacity:syncing?0.6:1}}>🔄 Re-sync</button>
+            <button onClick={()=>{tokenRef.current=null;sheetIdRef.current=null;setAuthState("idle");}} style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#64748b",borderRadius:8,padding:"5px 10px",cursor:"pointer",fontSize:11}}>Sign out</button>
+          </div>
         )}
       </div>
 
@@ -683,6 +869,16 @@ function App(){
         </div>
       )}
 
+      {/* BODY COMP */}
+      {tab==="body" && (
+        <BodyTab
+          bodyComp={bodyComp}
+          onAdd={()=>setModal({step:"bodyForm"})}
+          onEdit={(entry)=>setModal({step:"bodyForm", editId:entry.id, prefill:entry})}
+          onDelete={deleteBodyEntry}
+        />
+      )}
+
       {/* STATS */}
       {tab==="stats" && (
         <div style={{padding:16}}>
@@ -727,7 +923,7 @@ function App(){
           onClick={e=>{if(e.target===e.currentTarget)setModal(null);}}>
           <div style={{background:"#0f172a",maxWidth:480,margin:"0 auto",minHeight:"100vh",borderLeft:"1px solid rgba(255,255,255,0.06)",borderRight:"1px solid rgba(255,255,255,0.06)"}}>
             <div style={{position:"sticky",top:0,zIndex:10,background:"rgba(15,23,42,0.98)",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"13px 16px",display:"flex",alignItems:"center",gap:10}}>
-              {modal.step!=="day"&&(
+              {modal.step!=="day"&&modal.step!=="bodyForm"&&(
                 <button onClick={()=>setModal(p=>({...p,step:modal.step==="log"||modal.step==="pickEx"?"pick":modal.step==="edit"?"day":"day"}))}
                   style={{background:"rgba(255,255,255,0.07)",border:"none",color:"#94a3b8",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontSize:14}}>‹</button>
               )}
@@ -737,6 +933,7 @@ function App(){
                   {modal.step==="pick"   && "Choose Workout"}
                   {modal.step==="pickEx" && `${WORKOUTS[modal.workoutId]?.icon} ${WORKOUTS[modal.workoutId]?.label}`}
                   {(modal.step==="log"||modal.step==="edit") && ALL_EX[modal.exerciseId]?.name}
+                  {modal.step==="bodyForm" && (modal.editId?"Edit Measurement":"Log Body Composition")}
                 </div>
                 {modal.step==="day"&&<div style={{fontSize:11,color:"#475569"}}>{(logs[modal.dk]||[]).length} entries</div>}
                 {(modal.step==="log"||modal.step==="edit")&&<div style={{fontSize:11,color:"#475569"}}>{WORKOUTS[modal.workoutId]?.label}{modal.step==="log"&&modal._progress?` · ${modal._progress.cur} / ${modal._progress.total}`:""}</div>}
@@ -771,6 +968,9 @@ function App(){
                   ?<SwimForm form={form} setForm={setForm} onSave={saveEntry} isLast={isLast}/>
                   :<ExForm ex={ex} form={form} setForm={setForm} pr={prs[ex.id]} onSave={saveEntry} isEdit={modal.step==="edit"} isLast={isLast}/>;
               })()}
+              {modal.step==="bodyForm" && (
+                <BodyForm prefill={modal.prefill} editId={modal.editId} onSave={saveBodyEntry} onCancel={()=>setModal(null)}/>
+              )}
             </div>
           </div>
         </div>
@@ -945,6 +1145,156 @@ function SwimForm({form,setForm,onSave,isLast}){
       })}
       <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
         {isLast?"Finish Workout ✓":"Save & Next →"}
+      </button>
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────
+// BODY COMP TAB
+// ─────────────────────────────────────────────
+function BodyTab({bodyComp, onAdd, onEdit, onDelete}){
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const sorted = [...bodyComp].sort((a,b)=>b.date.localeCompare(a.date));
+
+  function netChange(key, curr, prev){
+    if(curr==null||prev==null) return null;
+    const diff = (parseFloat(curr)-parseFloat(prev)).toFixed(1);
+    const pos = diff > 0;
+    return <span style={{color:pos?"#4ade80":"#f87171",fontSize:11,fontWeight:700}}>{pos?"+":""}{diff}</span>;
+  }
+
+  return (
+    <div style={{padding:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div style={{fontSize:18,fontWeight:700}}>Body Composition ⚖️</div>
+        <button onClick={onAdd} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:10,padding:"8px 16px",cursor:"pointer",fontSize:13,fontWeight:700}}>+ Log</button>
+      </div>
+
+      {sorted.length===0&&(
+        <div style={{textAlign:"center",padding:"40px 0",color:"#475569"}}>
+          <div style={{fontSize:36,marginBottom:8}}>⚖️</div>
+          <div style={{fontWeight:600,marginBottom:4}}>No measurements yet</div>
+          <div style={{fontSize:12}}>Tap "+ Log" to add your first entry</div>
+        </div>
+      )}
+
+      {sorted.map((entry, i)=>{
+        const prev = sorted[i+1];
+        const isConf = confirmDelete===entry.id;
+        return (
+          <div key={entry.id} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,padding:"14px",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontWeight:700,fontSize:14,color:"#f1f5f9"}}>{entry.dateLabel}</div>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>onEdit(entry)} style={{background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.3)",color:"#60a5fa",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:600}}>Edit</button>
+                {!isConf
+                  ?<button onClick={()=>setConfirmDelete(entry.id)} style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",color:"#f87171",borderRadius:7,padding:"4px 8px",cursor:"pointer",fontSize:12}}>✕</button>
+                  :<button onClick={()=>{onDelete(entry.id);setConfirmDelete(null);}} style={{background:"rgba(239,68,68,0.25)",border:"1px solid rgba(239,68,68,0.5)",color:"#f87171",borderRadius:7,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:700}}>Delete?</button>
+                }
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <BCMetric label="Weight" value={entry.weight} unit="kg" change={netChange("weight",entry.weight,prev?.weight)}/>
+              <BCMetric label="Muscle Mass" value={entry.muscleMassKg} unit="kg" pct={entry.muscleMassPct} change={netChange("muscle",entry.muscleMassKg,prev?.muscleMassKg)}/>
+              <BCMetric label="Body Fat" value={entry.bodyFatKg} unit="kg" pct={entry.bodyFatPct} change={netChange("fat",entry.bodyFatKg,prev?.bodyFatKg)} invertColor/>
+              <BCMetric label="Body Water" value={entry.bodyWaterKg} unit="kg" pct={entry.bodyWaterPct} change={netChange("water",entry.bodyWaterKg,prev?.bodyWaterKg)}/>
+              <BCMetric label="BMR" value={entry.bmr} unit="kcal" change={netChange("bmr",entry.bmr,prev?.bmr)}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BCMetric({label, value, unit, pct, change, invertColor}){
+  if(value==null) return null;
+  return (
+    <div style={{background:"rgba(255,255,255,0.03)",borderRadius:8,padding:"8px 10px"}}>
+      <div style={{fontSize:10,color:"#475569",fontWeight:600,textTransform:"uppercase",marginBottom:3}}>{label}</div>
+      <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>
+        {value}{unit} {pct!=null&&<span style={{fontSize:11,color:"#64748b",fontWeight:500}}>/ {pct}%</span>}
+      </div>
+      {change&&<div style={{marginTop:2}}>{change}</div>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// BODY COMP FORM
+// ─────────────────────────────────────────────
+function BodyForm({prefill, editId, onSave, onCancel}){
+  const today = new Date();
+  const [date, setDate] = useState(prefill?.date || `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`);
+  const [weight,       setWeight]       = useState(prefill?.weight??       "");
+  const [muscleMassKg, setMuscleMassKg] = useState(prefill?.muscleMassKg?? "");
+  const [muscleMassPct,setMuscleMassPct]= useState(prefill?.muscleMassPct??"");
+  const [bodyFatKg,    setBodyFatKg]    = useState(prefill?.bodyFatKg??    "");
+  const [bodyFatPct,   setBodyFatPct]   = useState(prefill?.bodyFatPct??   "");
+  const [bodyWaterKg,  setBodyWaterKg]  = useState(prefill?.bodyWaterKg??  "");
+  const [bodyWaterPct, setBodyWaterPct] = useState(prefill?.bodyWaterPct?? "");
+  const [bmr,          setBmr]          = useState(prefill?.bmr??          "");
+
+  function handleSave(){
+    const parts = date.split("-").map(Number);
+    const dl = new Date(parts[0],parts[1]-1,parts[2]).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"});
+    onSave({
+      date,
+      dateLabel: dl,
+      weight: weight!==""?parseFloat(weight):null,
+      muscleMassKg: muscleMassKg!==""?parseFloat(muscleMassKg):null,
+      muscleMassPct: muscleMassPct!==""?parseFloat(muscleMassPct):null,
+      bodyFatKg: bodyFatKg!==""?parseFloat(bodyFatKg):null,
+      bodyFatPct: bodyFatPct!==""?parseFloat(bodyFatPct):null,
+      bodyWaterKg: bodyWaterKg!==""?parseFloat(bodyWaterKg):null,
+      bodyWaterPct: bodyWaterPct!==""?parseFloat(bodyWaterPct):null,
+      bmr: bmr!==""?parseFloat(bmr):null,
+    }, editId);
+  }
+
+  const numInput = (label, val, setter, unit, placeholder) => (
+    <div style={{marginBottom:12}}>
+      <label style={{fontSize:12,color:"#94a3b8",fontWeight:600,display:"block",marginBottom:5}}>{label} <span style={{color:"#475569",fontWeight:400}}>({unit})</span></label>
+      <input type="number" inputMode="decimal" step="0.1" value={val} onChange={e=>setter(e.target.value)} placeholder={placeholder||""}
+        style={{width:"100%",background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"10px 12px",fontSize:15}}/>
+    </div>
+  );
+
+  const dualInput = (label, kgVal, kgSetter, pctVal, pctSetter) => (
+    <div style={{marginBottom:12}}>
+      <label style={{fontSize:12,color:"#94a3b8",fontWeight:600,display:"block",marginBottom:5}}>{label}</label>
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:1}}>
+          <input type="number" inputMode="decimal" step="0.1" value={kgVal} onChange={e=>kgSetter(e.target.value)} placeholder="kg"
+            style={{width:"100%",background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"10px 12px",fontSize:15}}/>
+          <span style={{fontSize:10,color:"#475569",marginTop:2,display:"block",textAlign:"center"}}>kg</span>
+        </div>
+        <div style={{flex:1}}>
+          <input type="number" inputMode="decimal" step="0.1" value={pctVal} onChange={e=>pctSetter(e.target.value)} placeholder="%"
+            style={{width:"100%",background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"10px 12px",fontSize:15}}/>
+          <span style={{fontSize:10,color:"#475569",marginTop:2,display:"block",textAlign:"center"}}>%</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{marginBottom:14}}>
+        <label style={{fontSize:12,color:"#94a3b8",fontWeight:600,display:"block",marginBottom:5}}>Measurement Date</label>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)}
+          style={{width:"100%",background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.14)",borderRadius:8,color:"#f1f5f9",padding:"10px 12px",fontSize:15}}/>
+      </div>
+      {numInput("Weight",""+weight,setWeight,"kg","e.g. 79.0")}
+      {dualInput("Muscle Mass",""+muscleMassKg,setMuscleMassKg,""+muscleMassPct,setMuscleMassPct)}
+      {dualInput("Body Fat",""+bodyFatKg,setBodyFatKg,""+bodyFatPct,setBodyFatPct)}
+      {dualInput("Body Water",""+bodyWaterKg,setBodyWaterKg,""+bodyWaterPct,setBodyWaterPct)}
+      {numInput("BMR",""+bmr,setBmr,"kcal","e.g. 1757")}
+      <div style={{height:80}}/>
+      <button onClick={handleSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
+        {editId?"Update Measurement ✓":"Save Measurement ✓"}
       </button>
     </div>
   );
