@@ -594,7 +594,7 @@ function App(){
       ?{id,workoutId,exerciseId,swimLaps:form.laps,savedAt:Date.now()}
       :{id,workoutId,exerciseId,sets:form.sets,savedAt:Date.now()};
 
-    // PR check
+    // PR check — only flag genuine improvements over existing PR
     const newPrNames=[];
     const updatedPrs={...prs};
     if(!ex?.isSwimming&&form.sets){
@@ -612,10 +612,15 @@ function App(){
     }
     if(newPrNames.length) setPrs(updatedPrs);
 
+    // Fix Bug 1: for edits, find the actual date key the entry lives under
+    const actualKey = isEdit
+      ? Object.keys(logs).find(dk => (logs[dk]||[]).some(e=>e.id===entryId)) || key
+      : key;
+
     setLogs(prev=>{
-      const existing=prev[key]||[];
+      const existing=prev[actualKey]||[];
       const updated=isEdit?existing.map(e=>e.id===entryId?entry:e):[...existing,entry];
-      const newLogs={...prev,[key]:updated};
+      const newLogs={...prev,[actualKey]:updated};
       localStorage.setItem("gl_logs",JSON.stringify(newLogs));
       return newLogs;
     });
@@ -632,21 +637,18 @@ function App(){
       try{
         if(isEdit){
           const rowNum=workoutRowsRef.current[entryId];
-          if(rowNum) await updateRow(token,sheetIdRef.current,entry,key,label,rowNum);
-          else { await appendRow(token,sheetIdRef.current,entry,key,label); }
+          if(rowNum) await updateRow(token,sheetIdRef.current,entry,actualKey,label,rowNum);
+          else await appendRow(token,sheetIdRef.current,entry,actualKey,label);
         } else {
-          await appendRow(token,sheetIdRef.current,entry,key,label);
-          // Get new row number
+          await appendRow(token,sheetIdRef.current,entry,actualKey,label);
           const d=await sheetsRequest(token,`/${sheetIdRef.current}/values/Workouts!A:A`);
           const rowNum=(d.values?.length||1);
           workoutRowsRef.current={...workoutRowsRef.current,[id]:rowNum};
         }
-        // Sync PRs
         for(const name of newPrNames){
           const eid=Object.keys(updatedPrs).find(k=>ALL_EX[k]?.name===name);
           if(eid) await upsertPR(token,sheetIdRef.current,eid,updatedPrs[eid],prRowsRef.current);
         }
-        // Sync settings
         if(workoutId==="leg1"||workoutId==="leg2"){
           await saveSetting(token,sheetIdRef.current,"lastLeg",workoutId,settRowsRef.current);
         }
@@ -659,6 +661,7 @@ function App(){
       setSyncing(false);
     }
 
+    // Fix Bug 2: only show PR flash if there are genuine new PRs
     if(newPrNames.length) setFlash(newPrNames);
 
     // Auto-advance to next exercise (only when adding, not editing)
@@ -668,6 +671,8 @@ function App(){
       const curIdx = exList.findIndex(e=>e.id===exerciseId);
       const nextEx = exList[curIdx+1];
       if(nextEx){
+        // Fix Bug 3: clear flash before advancing so previous PR doesn't bleed through
+        setFlash(null);
         const pr2 = updatedPrs[nextEx.id];
         let prefillW2="";
         if(nextEx.trackWeight&&pr2?.weight) prefillW2=String(pr2.reps>=10?pr2.weight+2.5:pr2.weight);
@@ -1089,10 +1094,32 @@ function ExForm({ex,form,setForm,pr,onSave,isEdit,isLast}){
   const sug=prSug(pr);
   return (
     <div>
-      <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:10,padding:"10px 12px",marginBottom:14}}>
-        <div style={{fontSize:12,color:"#64748b",marginBottom:2}}>{ex.sets} sets × {ex.repRange} reps</div>
-        {pr&&<div style={{fontSize:12,color:"#64748b"}}>PR: <span style={{color:"#fbbf24",fontWeight:700}}>{ex.bodyweight?`${pr.reps} reps`:`${pr.weight}kg × ${pr.reps}`}</span> <span style={{color:"#475569"}}>({pr.date})</span></div>}
-        {sug&&!ex.bodyweight&&!ex.stepsOnly&&<div style={{fontSize:12,color:"#3b82f6",marginTop:3}}>💡 {sug}</div>}
+      {/* Prominent PR card */}
+      {pr && !ex.bodyweight && !ex.stepsOnly && (
+        <div style={{background:"linear-gradient(135deg,rgba(251,191,36,0.15),rgba(245,158,11,0.08))",border:"1px solid rgba(251,191,36,0.35)",borderRadius:12,padding:"12px 16px",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:10,color:"#92400e",fontWeight:700,letterSpacing:"0.8px",textTransform:"uppercase",marginBottom:4}}>🏆 Your Current PR</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#fbbf24",letterSpacing:"-0.5px"}}>{pr.weight}kg <span style={{fontSize:14,color:"#d97706"}}>× {pr.reps} reps</span></div>
+            <div style={{fontSize:11,color:"#78350f",marginTop:2}}>{pr.date}</div>
+          </div>
+          {sug&&(
+            <div style={{background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.3)",borderRadius:8,padding:"8px 12px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:"#93c5fd",fontWeight:700,marginBottom:3}}>TODAY</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#60a5fa"}}>{pr.reps>=10?pr.weight+2.5:pr.weight}kg</div>
+              <div style={{fontSize:9,color:"#64748b"}}>{pr.reps>=10?"try this":"maintain"}</div>
+            </div>
+          )}
+        </div>
+      )}
+      {pr && ex.bodyweight && (
+        <div style={{background:"linear-gradient(135deg,rgba(251,191,36,0.15),rgba(245,158,11,0.08))",border:"1px solid rgba(251,191,36,0.35)",borderRadius:12,padding:"12px 16px",marginBottom:12}}>
+          <div style={{fontSize:10,color:"#92400e",fontWeight:700,letterSpacing:"0.8px",textTransform:"uppercase",marginBottom:4}}>🏆 Your Current PR</div>
+          <div style={{fontSize:22,fontWeight:800,color:"#fbbf24"}}>{pr.reps} reps</div>
+          <div style={{fontSize:11,color:"#78350f",marginTop:2}}>{pr.date}</div>
+        </div>
+      )}
+      <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:10,padding:"8px 12px",marginBottom:14}}>
+        <div style={{fontSize:12,color:"#64748b"}}>{ex.sets} sets × {ex.repRange} reps</div>
       </div>
       {ex.stepsOnly
         ?<div style={{color:"#94a3b8",fontSize:13,padding:"8px 0"}}>Bodyweight — 3 sets of 20 steps. No data entry needed.</div>
@@ -1117,6 +1144,7 @@ function ExForm({ex,form,setForm,pr,onSave,isEdit,isLast}){
           );
         })
       }
+      <div style={{height:90}}/>
       <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
         {isEdit?"Update Entry ✓":isLast?"Finish Workout ✓":"Save & Next →"}
       </button>
@@ -1143,6 +1171,7 @@ function SwimForm({form,setForm,onSave,isLast}){
           </div>
         );
       })}
+      <div style={{height:90}}/>
       <button onClick={onSave} style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#22c55e",border:"none",color:"#fff",borderRadius:14,padding:"14px 0",fontWeight:700,cursor:"pointer",fontSize:16,width:"calc(100% - 80px)",maxWidth:360,boxShadow:"0 4px 24px rgba(34,197,94,0.35)"}}>
         {isLast?"Finish Workout ✓":"Save & Next →"}
       </button>
